@@ -26,8 +26,8 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
-import { QueuedMessages } from './queuedMessages.js'
 import { PetSprite } from './petSprite.js'
+import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -42,7 +42,7 @@ const PetPane = memo(function PetPane() {
   }
 
   return (
-    <NoSelect alignItems="flex-end" flexShrink={0} paddingX={1}>
+    <NoSelect alignItems="flex-end" flexShrink={0} paddingX={1} width="100%">
       <PetSprite grid={grid} />
     </NoSelect>
   )

@@ -176,6 +176,14 @@ def _cmd_show(args) -> int:
     is_unicode = renderer.mode == "unicode"
     frame_delay = max(0.05, (LOOP_MS / 1000.0) / max(1, renderer.frame_count(states[0]) or 1))
 
+    # Right-align the half-block sprite against the terminal's right edge.
+    import shutil
+
+    indent = ""
+    if is_unicode:
+        term_cols = shutil.get_terminal_size((80, 24)).columns
+        indent = " " * max(0, term_cols - cols - 1)
+
     out = sys.stdout
     out.write("\x1b[?25l")  # hide cursor
     out.flush()
@@ -189,11 +197,15 @@ def _cmd_show(args) -> int:
                 for i in range(count):
                     encoded = renderer.frame(state, i)
                     if is_unicode:
+                        if indent:
+                            encoded = "\n".join(indent + ln for ln in encoded.split("\n"))
                         if prev_lines:
-                            out.write(f"\x1b[{prev_lines}F")  # cursor up to redraw
+                            out.write(f"\x1b[{prev_lines}F")  # cursor up to redraw in place
                         out.write(encoded)
                         out.write("\x1b[0m\n")
-                        prev_lines = encoded.count("\n") + 2
+                        # Lines drawn = sprite rows + the trailing newline; move
+                        # back up exactly that many so the next frame overwrites.
+                        prev_lines = encoded.count("\n") + 1
                     else:
                         out.write("\x1b[2J\x1b[3J\x1b[H")  # clear for image protocols
                         out.write(f"{pet.display_name} [{state}]\n")

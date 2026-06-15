@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
 
@@ -38,27 +38,37 @@ interface PetCellsResult {
   enabled?: boolean
   frameMs?: number
   frames?: PetGrid[]
+  slug?: string
   state?: string
 }
 
+const FRAME_MS = 160
+const POLL_MS = 2500
+
 /**
- * Drives the TUI pet: derives the live state from the turn/ui stores, lazily
- * fetches each state's half-block frames via the `pet.cells` RPC (cached),
- * and animates the frame index. Returns the grid to paint, or null when no
- * pet is enabled/installed.
+ * Drives the TUI pet: derives the live state from the turn/ui stores, fetches
+ * each (slug, state)'s half-block frames via the `pet.cells` RPC (cached), and
+ * animates the frame index. Returns the grid to paint, or null when no pet is
+ * enabled/installed.
+ *
+ * A steady `pet.cells` poll keeps it reactive to config changes made elsewhere
+ * — `/pet`, the picker, `hermes pets select` — so adopting, switching, or
+ * disabling a pet takes effect live (no restart). The frame cache is keyed by
+ * slug so a switch re-pulls the new sprite instead of showing the old one.
  */
 export function usePet(): { enabled: boolean; grid: PetGrid | null } {
   const { rpc } = useGateway()
   const [enabled, setEnabled] = useState(false)
   const [grid, setGrid] = useState<PetGrid | null>(null)
 
-  const cache = useRef<Map<PetState, { frameMs: number; frames: PetGrid[] }>>(new Map())
+  const cache = useRef<Map<string, { frameMs: number; frames: PetGrid[] }>>(new Map())
+  const slugRef = useRef('')
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
-  const probed = useRef(false)
+
+  const [petState, setPetState] = useState<PetState>('idle')
 
   // Recompute the desired state on every turn/ui change.
-  const [petState, setPetState] = useState<PetState>('idle')
   useEffect(() => {
     const recompute = () => {
       const turn = $turnState.get()
@@ -70,8 +80,11 @@ export function usePet(): { enabled: boolean; grid: PetGrid | null } {
         reasoning: turn.reasoningActive
       })
 
-      stateRef.current = next
-      setPetState(next)
+      if (next !== stateRef.current) {
+        stateRef.current = next
+        frameRef.current = 0
+        setPetState(next)
+      }
     }
 
     recompute()
@@ -84,75 +97,58 @@ export function usePet(): { enabled: boolean; grid: PetGrid | null } {
     }
   }, [])
 
-  // Fetch frames for the current state (lazily, cached).
-  useEffect(() => {
-    let cancelled = false
-
-    if (cache.current.has(petState)) {
-      frameRef.current = 0
-
-      return
-    }
-    void (async () => {
+  // Fetch + cache one (slug, state). `pet.cells` resolves the active pet from
+  // config, so its `slug`/`enabled` are the source of truth: a changed slug
+  // invalidates the cache, a disabled pet clears everything.
+  const sync = useCallback(
+    async (state: PetState) => {
       try {
-        const res = (await rpc('pet.cells', { state: petState })) as PetCellsResult | null
+        const res = (await rpc('pet.cells', { state })) as PetCellsResult | null
 
-        if (cancelled || !res) {
+        if (!res) {
           return
         }
 
-        if (!probed.current) {
-          probed.current = true
-          setEnabled(Boolean(res.enabled))
+        if (!res.enabled) {
+          slugRef.current = ''
+          cache.current.clear()
+          setGrid(null)
+          setEnabled(false)
+
+          return
         }
 
-        if (res.enabled && res.frames?.length) {
-          cache.current.set(petState, { frameMs: res.frameMs ?? 180, frames: res.frames })
+        const slug = res.slug ?? ''
+
+        if (slug !== slugRef.current) {
+          slugRef.current = slug
+          cache.current.clear()
           frameRef.current = 0
         }
-      } catch {
-        // cosmetic — ignore RPC failures
-      }
-    })()
 
-    return () => {
-      cancelled = true
-    }
-  }, [petState, rpc])
-
-  // While no pet is active, poll `pet.cells` so an in-app `/pet <slug>` (which
-  // writes display.pet.* from the slash worker) lights the pet up live — no
-  // restart. Stops once a pet is enabled.
-  useEffect(() => {
-    if (enabled) {
-      return
-    }
-
-    let cancelled = false
-
-    const probe = async () => {
-      try {
-        const res = (await rpc('pet.cells', { state: stateRef.current })) as PetCellsResult | null
-
-        if (cancelled || !res?.enabled || !res.frames?.length) {
-          return
+        if (res.frames?.length) {
+          cache.current.set(`${slug}:${state}`, { frameMs: res.frameMs ?? FRAME_MS, frames: res.frames })
         }
 
-        cache.current.set(stateRef.current, { frameMs: res.frameMs ?? 180, frames: res.frames })
-        frameRef.current = 0
         setEnabled(true)
       } catch {
         // cosmetic — ignore RPC failures
       }
+    },
+    [rpc]
+  )
+
+  // Pull frames whenever the state changes (if not already cached for the
+  // active pet), plus a steady poll that catches adopt/switch/disable.
+  useEffect(() => {
+    if (!cache.current.has(`${slugRef.current}:${petState}`)) {
+      void sync(petState)
     }
 
-    const timer = setInterval(() => void probe(), 3000)
+    const timer = setInterval(() => void sync(stateRef.current), POLL_MS)
 
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [enabled, rpc])
+    return () => clearInterval(timer)
+  }, [petState, sync])
 
   // Animation timer.
   useEffect(() => {
@@ -161,12 +157,10 @@ export function usePet(): { enabled: boolean; grid: PetGrid | null } {
     }
 
     const tick = () => {
-      const entry = cache.current.get(stateRef.current)
+      const entry = cache.current.get(`${slugRef.current}:${stateRef.current}`)
 
-      if (!entry || !entry.frames.length) {
-        setGrid(null)
-
-        return
+      if (!entry?.frames.length) {
+        return // keep the last frame painted while the new state loads
       }
 
       const idx = frameRef.current % entry.frames.length
@@ -175,7 +169,7 @@ export function usePet(): { enabled: boolean; grid: PetGrid | null } {
     }
 
     tick()
-    const interval = setInterval(tick, 160)
+    const interval = setInterval(tick, FRAME_MS)
 
     return () => clearInterval(interval)
   }, [enabled, petState])
