@@ -112,6 +112,7 @@ jobs:
       # Isolated install directory so the real install flow doesn't touch the
       # runner's user profile. Kept under the workspace for easy cleanup.
       HERMES_HOME: ${{ github.workspace }}\.e2e-hermes-home
+      INSTALL_DIR: "${{ github.workspace }}\.e2e-hermes-home\hermes-agent"
 
     steps:
       - uses: actions/checkout@v4
@@ -160,13 +161,12 @@ jobs:
       # ── Prepare an isolated HERMES_HOME and copy checked-out repo ──────
       # actions/checkout already has the right commit; just mirror it into the
       # isolated home so the installer doesn't need to reach GitHub.
-      - name: Copy checked-out workspace into isolated HERMES_HOME
+      - name: Move checked-out workspace into isolated HERMES_HOME
         shell: pwsh
         run: |
-          $installDir = "$env:HERMES_HOME\hermes-agent"
-          New-Item -ItemType Directory -Path $installDir -Force
-          Get-ChildItem -Path ${{ github.workspace }}\source -Force | Move-Item -Destination $installDir -Force
-          Write-Host "Isolated install dir ready: $installDir"
+          New-Item -ItemType Directory -Path $env:INSTALL_DIR -Force
+          Get-ChildItem -Path ${{ github.workspace }}\source -Force | Move-Item -Destination $env:INSTALL_DIR -Force
+          Write-Host "Isolated install dir ready: $env:INSTALL_DIR"
 
       # ── Run the headed installer + AHK helper ───────────────────────
       - name: Launch Hermes-Setup.exe and install it
@@ -203,9 +203,7 @@ jobs:
           Write-Host "ffmpeg recording started (pid $($ffmpeg.Id))"
 
           try {
-          ls .\source\e2e\
-          ls .\source\e2e\windows\
-          $ahk | Out-File -Encoding utf8 ".\source\e2e\windows\install-hermes-desktop.ahk"
+          $ahk | Out-File -Encoding utf8 "$env:INSTALL_DIR\e2e\windows\install-hermes-desktop.ahk"
 
           $ahkProc = Start-Process -FilePath ".\test-bins\autohotkey\AutoHotkey64.exe" `
             -ArgumentList '"capture-button.ahk"' -PassThru -NoNewWindow `
